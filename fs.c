@@ -2,6 +2,26 @@
 #include <stdlib.h>
 #include <getopt.h>
 
+typedef struct {
+    int magic_number;
+    int disk_size;
+    int block_size;
+    int total_blocks;
+    int bitmap_start;
+    int bitmap_blocks;
+    int inode_start;
+    int inode_blocks;
+    int data_start;
+} superblock_t;
+
+typedef struct {
+    char filename[32];
+    int size;
+    int start_block;
+    int block_count;
+    int used;
+} inode_t;
+
 int main(int argc, char *argv[]) {
     int option;
     char *disk_file;
@@ -18,7 +38,7 @@ int main(int argc, char *argv[]) {
         {"diskSize",    required_argument,  0, 'd'},
         {"blockSize",   required_argument,  0, 'b'},
         {"totalBlocks", required_argument,  0, 't'},
-        {"workloadFile",required_argument, 0, 'w'},
+        {"workloadFile",required_argument,  0, 'w'},
         {0, 0, 0, 0}
     };
 
