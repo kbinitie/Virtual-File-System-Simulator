@@ -1,7 +1,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <getopt.h>
+#include <unistd.h>
+
+#define MAGIC_NUMBER 0x12345678
+#define BITMAP_START 1
+#define BITMAP_BLOCKS 4
+#define INODE_START 5
+#define INODE_BLOCKS 16
+#define DATA_START 21
+#define MAX_COMMAND_LENGTH 256
+
 typedef struct
 {
     int magic_number;
@@ -24,55 +33,45 @@ typedef struct
     int used;
 } inode_t;
 
-// Functions for disk interface
-FILE *disk_create(char *diskfile);
-int disk_open(char *disk_file);
+// functions for disk interface
+FILE *disk_create(char *diskfile, int disk_size);
+FILE *disk_open(char *disk_file);
+FILE *disk_create_or_open(char *disk_file, int disk_size);
 int disk_close(FILE *disk_file_pointer);
-int disk_read_block(FILE *disk_file, int block_number, int block_size, char *buffer);
-int disk_write_block(FILE *disk_file, int block_number, int block_size, char *buffer);
+int disk_read_block(FILE *disk_file, int block_number, int block_size, int total_blocks, char *buffer);
+int disk_write_block(FILE *disk_file, int block_number, int block_size, int total_blocks, char *buffer);
 
-// Helper functions 
+// helper functions
+void print_usage(char *program_name);
 int initialize_superblock(superblock_t *sb, int disk_size, int block_size, int total_blocks);
-int initialize_bitmap(int *bitmap, int bitmap_blocks);
-int initialize_inode_table(inode_t *inode_table, int inode_blocks);
+int initialize_bitmap(char *bitmap, int bitmap_size, int total_blocks);
+int initialize_inode_table(inode_t *inode_table, int max_inodes);
 
-// Functions for parsing workload file and executing commands
-int parse_workload_file(char *workload_file, superblock_t *sb, int block_size, int total_blocks, char *disk_file);
-int execute_command(char *command, superblock_t *sb, int block_size, int total_blocks, char *disk_file);
+// functions for parsing workload file and executing commands
+int parse_workload_file(char *workload_file, FILE *disk_file_pointer, superblock_t *sb);
+int execute_command(char *command, FILE *disk_file_pointer, superblock_t *sb);
 
 int main(int argc, char *argv[])
 {
     int option;
-    int disk_size;
-    int block_size;
-    int total_blocks;
-    char *workload_file;
-    char *disk_file;
-    int *buffer;
+    int disk_size = 0;
+    int block_size = 0;
+    int total_blocks = 0;
 
-    // Define long options
-    static struct option long_options[] = {
-        {"help", no_argument, 0, 'h'},
-        {"version", no_argument, 0, 'v'},
-        {"diskFile", required_argument, 0, 'f'},
-        {"diskSize", required_argument, 0, 'd'},
-        {"blockSize", required_argument, 0, 'b'},
-        {"totalBlocks", required_argument, 0, 't'},
-        {"workloadFile", required_argument, 0, 'w'},
-        {0, 0, 0, 0}};
+    char *workload_file = NULL;
+    char *disk_file = NULL;
 
-    while ((option = getopt_long(argc, argv, "hvf:d:b:t:w:", long_options, NULL)) != -1)
+    FILE *disk_file_pointer = NULL;
+    superblock_t sb;
+
+    // parse command-line arguments
+    while ((option = getopt(argc, argv, "hf:d:b:t:w:")) != -1)
     {
         switch (option)
         {
         case 'h':
-            printf("Usage: %s [--help] [--version] [-f <disk_file> -d <disk_size> -b "
-                   "<block_size> -t <total_blocks> -w <workload file>]\n",
-                   argv[0]);
-            break;
-        case 'v':
-            printf("Version 0.6.7\n");
-            break;
+            print_usage(argv[0]);
+            return 0;
         case 'f':
             disk_file = optarg;
             break;
@@ -88,181 +87,261 @@ int main(int argc, char *argv[])
         case 'w':
             workload_file = optarg;
             break;
-        case '?':
-            // getopt_long already printed an error message
-            break;
         default:
-            abort();
+            print_usage(argv[0]);
+            return 1;
         }
     }
 
-    #ifdef DEBUG
-        printf("Debug Mode Enabled\n");
-        printf("Parsed Arguments:\n");
-        printf("Disk File: %s\n", disk_file);
-        printf("Disk Size: %d\n", disk_size);
-        printf("Block Size: %d\n", block_size);
-        printf("Total Blocks: %d\n", total_blocks);
-        printf("Workload File: %s\n", workload_file);
-    #endif
-
-    // Validate command-line arguments
-    // Assumptions:
-    // - Disk_file must not be NULL
-    // - Disk_size, block_size, and total_blocks must be positive integers
-    // - Workload_file must not be NULL
-    // - Disk_size should be at least block_size * total_blocks
-    // - Block_size should be at least 9 integers to store superblock information 
-    // - total_blocks should be large enough to accommodate superblock, bitmap, and inode table (at least 21 blocks)
-    
-    
-
+    // validate arguments
     if (disk_file == NULL || disk_size <= 0 || block_size <= 0 || total_blocks <= 0 || workload_file == NULL)
     {
         fprintf(stderr, "Invalid arguments\n");
-        fprintf(stderr, "Usage: %s [--help] [--version] [-f <disk_file> -d <disk_size> -b <block_size> -t <total_blocks> -w <workload file>]\n", argv[0]);
-        return EXIT_FAILURE;
+        print_usage(argv[0]);
+        return 1;
     }
 
     if (disk_size < block_size * total_blocks)
     {
         fprintf(stderr, "Invalid arguments: disk_size must be at least block_size * total_blocks\n");
-        return EXIT_FAILURE;
+        return 1;
     }
 
-    if(block_size < sizeof(int) * 9){
-        fprintf(stderr, "Invalid arguments: block_size must be at least %lu bytes to store superblock information\n", sizeof(int) * 9);
-        return EXIT_FAILURE;
-    }
-    
-    if (total_blocks < 21)
+    if (block_size < (int)sizeof(superblock_t))
     {
-        fprintf(stderr, "Invalid arguments: total_blocks must be at least 21 to accommodate superblock, bitmap, and inode table\n");
-        return EXIT_FAILURE;
+        fprintf(stderr, "Invalid arguments: block_size is too small for the superblock\n");
+        return 1;
     }
 
-    // Create the buffer to store temporary data read from the disk
-    buffer = (int *)malloc(block_size);
-    if (buffer == NULL)
+    if (total_blocks < DATA_START)
     {
-        fprintf(stderr, "Error allocating memory for buffer\n");
-        #ifdef DEBUG
-            fprintf(stderr, "Failed to allocate buffer of size %d bytes\n", block_size);
-        #endif
-        return EXIT_FAILURE;
+        fprintf(stderr, "Invalid arguments: total_blocks must be at least 21\n");
+        return 1;
     }
-    #ifdef DEBUG
-        printf("Buffer allocated successfully with size %d bytes\n", block_size);
-    #endif
 
-    // Open the workload file and parse commands
+    // this bitmap uses one byte per block
+    if (total_blocks > BITMAP_BLOCKS * block_size)
+    {
+        fprintf(stderr, "Invalid arguments: bitmap region cannot track all blocks\n");
+        return 1;
+    }
 
+    initialize_superblock(&sb, disk_size, block_size, total_blocks);
 
+    // create disk if missing, otherwise open existing disk
+    disk_file_pointer = disk_create_or_open(disk_file, disk_size);
+    if (disk_file_pointer == NULL)
+    {
+        return 1;
+    }
 
+    // open workload file and parse commands
+    if (parse_workload_file(workload_file, disk_file_pointer, &sb) == 0)
+    {
+        disk_close(disk_file_pointer);
+        return 1;
+    }
 
-
-
-
-
-    free(buffer);
+    disk_close(disk_file_pointer);
     return 0;
 }
 
-// Functions for disk interface
-FILE *disk_create(char *diskfile){
-    FILE *fp = fopen(diskfile, "wb");
+void print_usage(char *program_name)
+{
+    fprintf(stderr, "Usage: %s -f <disk_file> -d <disk_size> -b <block_size> -t <total_blocks> -w <workload_file>\n", program_name);
+}
+
+// functions for disk interface
+FILE *disk_create(char *diskfile, int disk_size)
+{
+    FILE *fp = fopen(diskfile, "wb+");
+
     if (fp == NULL)
     {
         fprintf(stderr, "Error creating disk file: %s\n", diskfile);
         return NULL;
     }
+
+    // allocate the virtual disk file to the requested size
+    if (fseek(fp, disk_size - 1, SEEK_SET) != 0)
+    {
+        fprintf(stderr, "Error allocating disk file\n");
+        fclose(fp);
+        return NULL;
+    }
+
+    if (fputc('\0', fp) == EOF)
+    {
+        fprintf(stderr, "Error writing last byte of disk file\n");
+        fclose(fp);
+        return NULL;
+    }
+
+    rewind(fp);
     return fp;
 }
-int disk_open(char *disk_file){
+
+FILE *disk_open(char *disk_file)
+{
     FILE *fp = fopen(disk_file, "rb+");
+
     if (fp == NULL)
     {
-        fprintf(stderr, "Error opening disk file: %s\n", disk_file);
-        return -1;
+        return NULL;
     }
-    return 0;
-}
-int disk_close(FILE *disk_file_pointer){
-    fclose(disk_file_pointer);
-    return 0;
-}
-int disk_read_block(FILE *disk_file, int block_number, int block_size, char *buffer)
-{
-    fseek(disk_file, block_number * block_size, SEEK_SET);
-    fread(buffer, block_size, 1, disk_file);
-    return 0;
-}
-int disk_write_block(FILE *disk_file, int block_number, int block_size, char *buffer)
-{
-    fseek(disk_file, block_number * block_size, SEEK_SET);
-    fwrite(buffer, block_size, 1, disk_file);
-    return 0;
+
+    return fp;
 }
 
-// Helper functions
+FILE *disk_create_or_open(char *disk_file, int disk_size)
+{
+    FILE *fp = disk_open(disk_file);
+
+    if (fp == NULL)
+    {
+        fp = disk_create(disk_file, disk_size);
+    }
+
+    return fp;
+}
+
+int disk_close(FILE *disk_file_pointer)
+{
+    if (disk_file_pointer == NULL)
+    {
+        return 0;
+    }
+
+    fclose(disk_file_pointer);
+    return 1;
+}
+
+int disk_read_block(FILE *disk_file, int block_number, int block_size, int total_blocks, char *buffer)
+{
+    if (block_number < 0 || block_number >= total_blocks)
+    {
+        fprintf(stderr, "Error: invalid block read %d\n", block_number);
+        return 0;
+    }
+
+    // move to the requested block
+    if (fseek(disk_file, block_number * block_size, SEEK_SET) != 0)
+    {
+        fprintf(stderr, "Error seeking to block %d\n", block_number);
+        return 0;
+    }
+
+    // read one full block
+    if (fread(buffer, 1, block_size, disk_file) != (size_t)block_size)
+    {
+        fprintf(stderr, "Error reading block %d\n", block_number);
+        return 0;
+    }
+
+    return 1;
+}
+
+int disk_write_block(FILE *disk_file, int block_number, int block_size, int total_blocks, char *buffer)
+{
+    if (block_number < 0 || block_number >= total_blocks)
+    {
+        fprintf(stderr, "Error: invalid block write %d\n", block_number);
+        return 0;
+    }
+
+    // move to the requested block
+    if (fseek(disk_file, block_number * block_size, SEEK_SET) != 0)
+    {
+        fprintf(stderr, "Error seeking to block %d\n", block_number);
+        return 0;
+    }
+
+    // write one full block
+    if (fwrite(buffer, 1, block_size, disk_file) != (size_t)block_size)
+    {
+        fprintf(stderr, "Error writing block %d\n", block_number);
+        return 0;
+    }
+
+    fflush(disk_file);
+    return 1;
+}
+
+// helper functions
 int initialize_superblock(superblock_t *sb, int disk_size, int block_size, int total_blocks)
 {
-    /*   
-    -------------------------------------
-    Blocks        Purpose
-    ------------- -----------------------
-    Block 0       Superblock
-
-    Blocks 1–4    Free-space bitmap
-
-    Blocks 5–20   Inode table (file
-                    metadata table)
-
-    Remaining     File data blocks
-    blocks        
-    -------------------------------------
-        */
-    sb->magic_number = 0x12345678; 
+    sb->magic_number = MAGIC_NUMBER;
     sb->disk_size = disk_size;
     sb->block_size = block_size;
     sb->total_blocks = total_blocks;
-    sb->bitmap_start = 1; // Bitmap starts at block 1   
-    sb->bitmap_blocks = (total_blocks + block_size * 8 - 1) / (block_size * 8); // Calculate bitmap blocks needed
-    sb->inode_start = sb->bitmap_start + sb->bitmap_blocks; // Inode table starts after bitmap
-    sb->inode_blocks = 20; // Fixed number of blocks for inode table (can be adjusted based on requirements)
-    sb->data_start = sb->inode_start + sb->inode_blocks; // Data blocks start after inode table
-    return 0;
-}
-int initialize_bitmap(int *bitmap, int bitmap_blocks)
-{
-    memset(bitmap, 0, bitmap_blocks * sizeof(int)); // Initialize all bits to 0 (free)
-    return 0;
-}
-int initialize_inode_table(inode_t *inode_table, int inode_blocks)
-{
-    memset(inode_table, 0, inode_blocks * sizeof(inode_t)); // Initialize all inodes to 0 (unused)
-    return 0;   
+
+    // fixed layout from the assignment
+    sb->bitmap_start = BITMAP_START;
+    sb->bitmap_blocks = BITMAP_BLOCKS;
+    sb->inode_start = INODE_START;
+    sb->inode_blocks = INODE_BLOCKS;
+    sb->data_start = DATA_START;
+
+    return 1;
 }
 
-// Functions for parsing workload file and executing commands
-int parse_workload_file(char *workload_file, superblock_t *sb, int block_size, int total_blocks, char *disk_file)
-{    FILE *fp = fopen(workload_file, "r");
+int initialize_bitmap(char *bitmap, int bitmap_size, int total_blocks)
+{
+    memset(bitmap, 0, bitmap_size);
+
+    // blocks 0-20 are metadata blocks
+    for (int i = 0; i < DATA_START && i < total_blocks; i++)
+    {
+        bitmap[i] = 1;
+    }
+
+    return 1;
+}
+
+int initialize_inode_table(inode_t *inode_table, int max_inodes)
+{
+    // clear all inode entries
+    memset(inode_table, 0, sizeof(inode_t) * max_inodes);
+    return 1;
+}
+
+// functions for parsing workload file and executing commands
+int parse_workload_file(char *workload_file, FILE *disk_file_pointer, superblock_t *sb)
+{
+    FILE *fp = fopen(workload_file, "r");
+    char command[MAX_COMMAND_LENGTH];
+
     if (fp == NULL)
     {
         fprintf(stderr, "Error opening workload file: %s\n", workload_file);
-        return -1;
-    }   
-    char command[256];
-    while (fgets(command, sizeof(command), fp) != NULL)
-    {        // Remove newline character from command
-        command[strcspn(command, "\n")] = 0;
-        execute_command(command, sb, block_size, total_blocks, disk_file);
+        return 0;
     }
+
+    while (fgets(command, sizeof(command), fp) != NULL)
+    {
+        // remove newline character
+        command[strcspn(command, "\n")] = '\0';
+
+        if (command[0] != '\0')
+        {
+            if (execute_command(command, disk_file_pointer, sb) == 0)
+            {
+                fclose(fp);
+                return 0;
+            }
+        }
+    }
+
     fclose(fp);
-    return 0;
+    return 1;
 }
-int execute_command(char *command, superblock_t *sb, int block_size, int total_blocks, char *disk_file)
-{    
+
+int execute_command(char *command, FILE *disk_file_pointer, superblock_t *sb)
+{
+    // these will be used when commands are implemented
+    (void)disk_file_pointer;
+    (void)sb;
+
     printf("Executing command: %s\n", command);
-    return 0;
+    return 1;
 }
