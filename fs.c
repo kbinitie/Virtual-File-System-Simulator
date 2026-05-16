@@ -45,13 +45,19 @@ int disk_write_block(FILE *disk_file, int block_number, int block_size, int tota
 void print_usage(char *program_name);
 int initialize_superblock(superblock_t *sb, int disk_size, int block_size, int total_blocks);
 int initialize_bitmap(char *bitmap, int bitmap_size, int total_blocks);
-int initialize_inode_table(inode_t *inode_table, int max_inodes);
+int initialize_inode_table(inode_t *inode_table, int inode_bytes);
 int format_disk(FILE *disk_file_pointer, superblock_t *sb);
+
+// bitmap helper functions
+int load_bitmap(FILE *disk_file_pointer, superblock_t *sb, char *bitmap);
+int save_bitmap(FILE *disk_file_pointer, superblock_t *sb, char *bitmap);
+int find_contiguous_blocks(char *bitmap, superblock_t *sb, int blocks_needed);
 
 // inode helper functions
 int load_inode_table(FILE *disk_file_pointer, superblock_t *sb, inode_t *inode_table);
 int save_inode_table(FILE *disk_file_pointer, superblock_t *sb, inode_t *inode_table);
 int create_file(FILE *disk_file_pointer, superblock_t *sb, char *filename);
+int write_file(FILE *disk_file_pointer, superblock_t *sb, char *filename, char *data);
 
 // functions for parsing workload file and executing commands
 int parse_workload_file(char *workload_file, FILE *disk_file_pointer, superblock_t *sb);
@@ -230,14 +236,12 @@ int disk_read_block(FILE *disk_file, int block_number, int block_size, int total
         return 0;
     }
 
-    // move to the requested block
     if (fseek(disk_file, block_number * block_size, SEEK_SET) != 0)
     {
         fprintf(stderr, "Error seeking to block %d\n", block_number);
         return 0;
     }
 
-    // read one full block
     if (fread(buffer, 1, block_size, disk_file) != (size_t)block_size)
     {
         fprintf(stderr, "Error reading block %d\n", block_number);
@@ -255,14 +259,12 @@ int disk_write_block(FILE *disk_file, int block_number, int block_size, int tota
         return 0;
     }
 
-    // move to the requested block
     if (fseek(disk_file, block_number * block_size, SEEK_SET) != 0)
     {
         fprintf(stderr, "Error seeking to block %d\n", block_number);
         return 0;
     }
 
-    // write one full block
     if (fwrite(buffer, 1, block_size, disk_file) != (size_t)block_size)
     {
         fprintf(stderr, "Error writing block %d\n", block_number);
@@ -304,10 +306,10 @@ int initialize_bitmap(char *bitmap, int bitmap_size, int total_blocks)
     return 1;
 }
 
-int initialize_inode_table(inode_t *inode_table, int max_inodes)
+int initialize_inode_table(inode_t *inode_table, int inode_bytes)
 {
-    // clear all inode entries
-    memset(inode_table, 0, sizeof(inode_t) * max_inodes);
+    // clear all inode table bytes
+    memset(inode_table, 0, inode_bytes);
     return 1;
 }
 
@@ -318,7 +320,7 @@ int format_disk(FILE *disk_file_pointer, superblock_t *sb)
     inode_t *inode_table;
 
     int bitmap_size;
-    int max_inodes;
+    int inode_bytes;
 
     block_buffer = (char *)malloc(sb->block_size);
     if (block_buffer == NULL)
@@ -365,8 +367,8 @@ int format_disk(FILE *disk_file_pointer, superblock_t *sb)
     }
 
     // clear inode table
-    max_inodes = (sb->inode_blocks * sb->block_size) / sizeof(inode_t);
-    inode_table = (inode_t *)malloc(sizeof(inode_t) * max_inodes);
+    inode_bytes = sb->inode_blocks * sb->block_size;
+    inode_table = (inode_t *)malloc(inode_bytes);
 
     if (inode_table == NULL)
     {
@@ -376,7 +378,7 @@ int format_disk(FILE *disk_file_pointer, superblock_t *sb)
         return 0;
     }
 
-    initialize_inode_table(inode_table, max_inodes);
+    initialize_inode_table(inode_table, inode_bytes);
 
     // write inode table blocks 5-20
     for (int i = 0; i < sb->inode_blocks; i++)
@@ -399,6 +401,92 @@ int format_disk(FILE *disk_file_pointer, superblock_t *sb)
 
     printf("Disk formatted successfully.\n");
     return 1;
+}
+
+// bitmap helper functions
+int load_bitmap(FILE *disk_file_pointer, superblock_t *sb, char *bitmap)
+{
+    char *block_buffer = (char *)malloc(sb->block_size);
+
+    if (block_buffer == NULL)
+    {
+        fprintf(stderr, "Error allocating block buffer\n");
+        return 0;
+    }
+
+    // read bitmap blocks 1-4
+    for (int i = 0; i < sb->bitmap_blocks; i++)
+    {
+        if (disk_read_block(disk_file_pointer, sb->bitmap_start + i, sb->block_size, sb->total_blocks, block_buffer) == 0)
+        {
+            free(block_buffer);
+            return 0;
+        }
+
+        memcpy(bitmap + (i * sb->block_size), block_buffer, sb->block_size);
+    }
+
+    free(block_buffer);
+    return 1;
+}
+
+int save_bitmap(FILE *disk_file_pointer, superblock_t *sb, char *bitmap)
+{
+    char *block_buffer = (char *)malloc(sb->block_size);
+
+    if (block_buffer == NULL)
+    {
+        fprintf(stderr, "Error allocating block buffer\n");
+        return 0;
+    }
+
+    // write bitmap blocks 1-4
+    for (int i = 0; i < sb->bitmap_blocks; i++)
+    {
+        memset(block_buffer, 0, sb->block_size);
+        memcpy(block_buffer, bitmap + (i * sb->block_size), sb->block_size);
+
+        if (disk_write_block(disk_file_pointer, sb->bitmap_start + i, sb->block_size, sb->total_blocks, block_buffer) == 0)
+        {
+            free(block_buffer);
+            return 0;
+        }
+    }
+
+    free(block_buffer);
+    return 1;
+}
+
+int find_contiguous_blocks(char *bitmap, superblock_t *sb, int blocks_needed)
+{
+    int start_block = -1;
+    int count = 0;
+
+    // search for free contiguous blocks in data region
+    for (int i = sb->data_start; i < sb->total_blocks; i++)
+    {
+        if (bitmap[i] == 0)
+        {
+            if (count == 0)
+            {
+                start_block = i;
+            }
+
+            count++;
+
+            if (count == blocks_needed)
+            {
+                return start_block;
+            }
+        }
+        else
+        {
+            count = 0;
+            start_block = -1;
+        }
+    }
+
+    return -1;
 }
 
 // inode helper functions
@@ -459,10 +547,12 @@ int create_file(FILE *disk_file_pointer, superblock_t *sb, char *filename)
 {
     inode_t *inode_table;
     int max_inodes;
+    int inode_bytes;
     int free_index = -1;
 
-    max_inodes = (sb->inode_blocks * sb->block_size) / sizeof(inode_t);
-    inode_table = (inode_t *)malloc(sizeof(inode_t) * max_inodes);
+    inode_bytes = sb->inode_blocks * sb->block_size;
+    max_inodes = inode_bytes / sizeof(inode_t);
+    inode_table = (inode_t *)malloc(inode_bytes);
 
     if (inode_table == NULL)
     {
@@ -519,6 +609,151 @@ int create_file(FILE *disk_file_pointer, superblock_t *sb, char *filename)
     return 1;
 }
 
+int write_file(FILE *disk_file_pointer, superblock_t *sb, char *filename, char *data)
+{
+    inode_t *inode_table;
+    char *bitmap;
+    char *block_buffer;
+
+    int inode_bytes;
+    int max_inodes;
+    int bitmap_size;
+    int file_index = -1;
+    int data_size;
+    int blocks_needed;
+    int start_block;
+
+    inode_bytes = sb->inode_blocks * sb->block_size;
+    max_inodes = inode_bytes / sizeof(inode_t);
+    bitmap_size = sb->bitmap_blocks * sb->block_size;
+
+    inode_table = (inode_t *)malloc(inode_bytes);
+    bitmap = (char *)malloc(bitmap_size);
+    block_buffer = (char *)malloc(sb->block_size);
+
+    if (inode_table == NULL || bitmap == NULL || block_buffer == NULL)
+    {
+        fprintf(stderr, "Error allocating memory for write\n");
+        free(inode_table);
+        free(bitmap);
+        free(block_buffer);
+        return 0;
+    }
+
+    if (load_inode_table(disk_file_pointer, sb, inode_table) == 0)
+    {
+        free(inode_table);
+        free(bitmap);
+        free(block_buffer);
+        return 0;
+    }
+
+    if (load_bitmap(disk_file_pointer, sb, bitmap) == 0)
+    {
+        free(inode_table);
+        free(bitmap);
+        free(block_buffer);
+        return 0;
+    }
+
+    // find file inode
+    for (int i = 0; i < max_inodes; i++)
+    {
+        if (inode_table[i].used == 1 && strcmp(inode_table[i].filename, filename) == 0)
+        {
+            file_index = i;
+            break;
+        }
+    }
+
+    if (file_index == -1)
+    {
+        fprintf(stderr, "Error: file not found: %s\n", filename);
+        free(inode_table);
+        free(bitmap);
+        free(block_buffer);
+        return 0;
+    }
+
+    if (inode_table[file_index].block_count > 0)
+    {
+        fprintf(stderr, "Error: file already has data. delete it before rewriting: %s\n", filename);
+        free(inode_table);
+        free(bitmap);
+        free(block_buffer);
+        return 0;
+    }
+
+    data_size = strlen(data);
+    blocks_needed = (data_size + sb->block_size - 1) / sb->block_size;
+
+    start_block = find_contiguous_blocks(bitmap, sb, blocks_needed);
+
+    if (start_block == -1)
+    {
+        fprintf(stderr, "Error: not enough contiguous free space\n");
+        free(inode_table);
+        free(bitmap);
+        free(block_buffer);
+        return 0;
+    }
+
+    // write file data into contiguous blocks
+    for (int i = 0; i < blocks_needed; i++)
+    {
+        int bytes_left = data_size - (i * sb->block_size);
+        int bytes_to_copy = sb->block_size;
+
+        if (bytes_left < sb->block_size)
+        {
+            bytes_to_copy = bytes_left;
+        }
+
+        memset(block_buffer, 0, sb->block_size);
+        memcpy(block_buffer, data + (i * sb->block_size), bytes_to_copy);
+
+        if (disk_write_block(disk_file_pointer, start_block + i, sb->block_size, sb->total_blocks, block_buffer) == 0)
+        {
+            free(inode_table);
+            free(bitmap);
+            free(block_buffer);
+            return 0;
+        }
+
+        bitmap[start_block + i] = 1;
+    }
+
+    // update inode metadata
+    inode_table[file_index].size = data_size;
+    inode_table[file_index].start_block = start_block;
+    inode_table[file_index].block_count = blocks_needed;
+
+    if (save_inode_table(disk_file_pointer, sb, inode_table) == 0)
+    {
+        free(inode_table);
+        free(bitmap);
+        free(block_buffer);
+        return 0;
+    }
+
+    if (save_bitmap(disk_file_pointer, sb, bitmap) == 0)
+    {
+        free(inode_table);
+        free(bitmap);
+        free(block_buffer);
+        return 0;
+    }
+
+    printf("Wrote file: %s\n", filename);
+    printf("Start block: %d\n", start_block);
+    printf("Blocks used: %d\n", blocks_needed);
+
+    free(inode_table);
+    free(bitmap);
+    free(block_buffer);
+    return 1;
+}
+
 // functions for parsing workload file and executing commands
 int parse_workload_file(char *workload_file, FILE *disk_file_pointer, superblock_t *sb)
 {
@@ -533,7 +768,6 @@ int parse_workload_file(char *workload_file, FILE *disk_file_pointer, superblock
 
     while (fgets(command, sizeof(command), fp) != NULL)
     {
-        // remove newline character
         command[strcspn(command, "\n")] = '\0';
 
         if (command[0] != '\0')
@@ -554,17 +788,29 @@ int execute_command(char *command, FILE *disk_file_pointer, superblock_t *sb)
 {
     char command_name[32];
     char filename[32];
+    char data[MAX_COMMAND_LENGTH];
 
     if (strcmp(command, "format") == 0)
     {
         return format_disk(disk_file_pointer, sb);
     }
 
-    if (sscanf(command, "%31s %31s", command_name, filename) == 2)
+    if (sscanf(command, "%31s %31s", command_name, filename) >= 2)
     {
         if (strcmp(command_name, "create") == 0)
         {
             return create_file(disk_file_pointer, sb, filename);
+        }
+
+        if (strcmp(command_name, "write") == 0)
+        {
+            if (sscanf(command, "%31s %31s %[^\n]", command_name, filename, data) == 3)
+            {
+                return write_file(disk_file_pointer, sb, filename, data);
+            }
+
+            fprintf(stderr, "Error: write command needs filename and data\n");
+            return 0;
         }
     }
 
