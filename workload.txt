@@ -1,0 +1,25 @@
+format
+ls
+bitmap
+create small.txt
+create second.txt
+write small.txt hello world
+write second.txt goodbye
+read small.txt
+read second.txt
+stat small.txt
+stat second.txt
+ls
+bitmap
+delete small.txt
+ls
+bitmap
+create reused.txt
+write reused.txt reused block
+read reused.txt
+stat reused.txt
+bitmap
+delete second.txt
+delete reused.txt
+ls
+bitmap
