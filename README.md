@@ -265,6 +265,8 @@ Total Head Movement: 23
 
 The SSTF implementation selects the closest unvisited block to minimize total seek distance.
 
+For demonstration purposes, the sample workload uses a smaller block size (64 bytes) so larger file writes span multiple contiguous blocks. This allows the SSTF scheduling behavior and contiguous allocation system to be clearly observed in the output.
+
 ---
 
 ## Compilation
@@ -280,7 +282,7 @@ gcc fs.c -o fs
 ## Execution Example
 
 ```
-./fs -f vdisk.img -d 1048576 -b 512 -t 2048 -w workload.txt
+./fs -f vdisk.img -d 16384 -b 64 -t 256 -w workload.txt
 ```
 
 ---
@@ -292,25 +294,25 @@ Example workload:
 format
 ls
 bitmap
-create small.txt
-create second.txt
-write small.txt hello world
-write second.txt goodbye
-read small.txt
-read second.txt
-stat small.txt
-stat second.txt
-ls
+create big.txt
+write big.txt abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghij
+read big.txt
+stat big.txt
 bitmap
-delete small.txt
+create small.txt
+write small.txt hello world
+read small.txt
+stat small.txt
 ls
+delete big.txt
 bitmap
 create reused.txt
 write reused.txt reused block
 read reused.txt
 stat reused.txt
+ls
 bitmap
-delete second.txt
+delete small.txt
 delete reused.txt
 ls
 bitmap
@@ -320,13 +322,76 @@ bitmap
 
 ## Example Output
 
+Note: Blocks 21–23 were allocated contiguously for big.txt.
+
 ```
 Disk formatted successfully.
 
+Files:
+No files found.
+
+Bitmap:
+111111111111111111111000000000000000...
+
+File created: big.txt
+
+Wrote file: big.txt
+Start block: 21
+Blocks used: 3
+
+SSTF Service Order:
+21 -> 22 -> 23
+Total Head Movement: 23
+
+File: big.txt
+Data: abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghij
+
+SSTF Service Order:
+21 -> 22 -> 23
+Total Head Movement: 23
+
+File metadata:
+Filename: big.txt
+Size: 140 bytes
+Start block: 21
+Block count: 3
+Used: 1
+
+Bitmap:
+111111111111111111111111000000000000...
+
 File created: small.txt
-File created: second.txt
 
 Wrote file: small.txt
+Start block: 24
+Blocks used: 1
+
+SSTF Service Order:
+24
+Total Head Movement: 24
+
+File: small.txt
+Data: hello world
+
+File metadata:
+Filename: small.txt
+Size: 11 bytes
+Start block: 24
+Block count: 1
+Used: 1
+
+Files:
+big.txt
+small.txt
+
+File deleted: big.txt
+
+Bitmap:
+111111111111111111111000100000000000...
+
+File created: reused.txt
+
+Wrote file: reused.txt
 Start block: 21
 Blocks used: 1
 
@@ -334,26 +399,31 @@ SSTF Service Order:
 21
 Total Head Movement: 21
 
-Wrote file: second.txt
-Start block: 22
-Blocks used: 1
-
-SSTF Service Order:
-22
-Total Head Movement: 22
-
-File: small.txt
-Data: hello world
-
-File: second.txt
-Data: goodbye
+File: reused.txt
+Data: reused block
 
 File metadata:
-Filename: small.txt
-Size: 11 bytes
+Filename: reused.txt
+Size: 12 bytes
 Start block: 21
 Block count: 1
 Used: 1
+
+Files:
+reused.txt
+small.txt
+
+Bitmap:
+111111111111111111111100100000000000...
+
+File deleted: small.txt
+File deleted: reused.txt
+
+Files:
+No files found.
+
+Bitmap:
+111111111111111111111000000000000000...
 ```
 
 ---
@@ -364,24 +434,31 @@ Note: The bitmap examples below are shortened for readability. The actual progra
 
 Initial bitmap after formatting:
 ```
-111111111111111111111000000000…
+111111111111111111111000000000...
 ```
 
-After writing two files:
+After writing `big.txt` across three blocks
 ```
-111111111111111111111110000000…
+111111111111111111111111000000...
+```
+
+After deleting `big.txt` while small.txt still exists:
+```
+111111111111111111111000100000...
 ```
 
 After deleting all files:
 ```
-111111111111111111111000000000…
+111111111111111111111000000000...
 ```
 
 This demonstrates that:
 
 - Metadata blocks always remain allocated
 - File blocks are dynamically allocated
+- Files use contiguous block allocation
 - File blocks are properly freed after deletion
+- Freed blocks can be reused by future files
 
 ---
 
@@ -391,11 +468,11 @@ The simulator correctly reuses freed blocks.
 
 Example:
 
-1. `small.txt` used block 21
-2. `small.txt` was deleted
-3. `reused.txt` reused block 21
+1. `big.txt` used blocks `21`, `22`, and `23`
+2. `big.txt` was deleted
+3. `reused.txt` reused block `21`
 
-This verifies that the bitmap correctly tracks freed space.
+This verifies that the bitmap correctly tracks freed space and allows freed blocks to be reused by future files.
 
 ---
 
