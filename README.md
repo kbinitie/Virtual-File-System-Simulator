@@ -437,7 +437,7 @@ Initial bitmap after formatting:
 111111111111111111111000000000...
 ```
 
-After writing `big.txt` across three blocks
+After writing `big.txt` across three blocks:
 ```
 111111111111111111111111000000...
 ```
