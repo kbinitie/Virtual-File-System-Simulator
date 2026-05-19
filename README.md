@@ -373,6 +373,10 @@ Total Head Movement: 24
 File: small.txt
 Data: hello world
 
+SSTF Service Order:
+24
+Total Head Movement: 24
+
 File metadata:
 Filename: small.txt
 Size: 11 bytes
@@ -442,7 +446,7 @@ After writing `big.txt` across three blocks:
 111111111111111111111111000000...
 ```
 
-After deleting `big.txt` while small.txt still exists:
+After deleting `big.txt` while `small.txt` still exists:
 ```
 111111111111111111111000100000...
 ```
