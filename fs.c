@@ -50,18 +50,26 @@ int initialize_bitmap(char *bitmap, int bitmap_size, int total_blocks);
 int initialize_inode_table(inode_t *inode_table, int inode_bytes);
 int format_disk(FILE *disk_file_pointer, superblock_t *sb);
 
+// sstf helpers
+void print_sstf(int blocks[], int count);
+int absolute_value(int number);
+
 // bitmap helper functions
 int load_bitmap(FILE *disk_file_pointer, superblock_t *sb, char *bitmap);
 int save_bitmap(FILE *disk_file_pointer, superblock_t *sb, char *bitmap);
 int find_contiguous_blocks(char *bitmap, superblock_t *sb, int blocks_needed);
+int show_bitmap(FILE *disk_file_pointer, superblock_t *sb);
 
 // inode helper functions
 int load_inode_table(FILE *disk_file_pointer, superblock_t *sb, inode_t *inode_table);
 int save_inode_table(FILE *disk_file_pointer, superblock_t *sb, inode_t *inode_table);
+
 int create_file(FILE *disk_file_pointer, superblock_t *sb, char *filename);
 int write_file(FILE *disk_file_pointer, superblock_t *sb, char *filename, char *data);
 int read_file(FILE *disk_file_pointer, superblock_t *sb, char *filename);
 int delete_file(FILE *disk_file_pointer, superblock_t *sb, char *filename);
+int list_files(FILE *disk_file_pointer, superblock_t *sb);
+int stat_file(FILE *disk_file_pointer, superblock_t *sb, char *filename);
 
 // functions for parsing workload file and executing commands
 int parse_workload_file(char *workload_file, FILE *disk_file_pointer, superblock_t *sb);
@@ -407,6 +415,70 @@ int format_disk(FILE *disk_file_pointer, superblock_t *sb)
     return 1;
 }
 
+int absolute_value(int number)
+{
+    if (number < 0)
+    {
+        return -number;
+    }
+
+    return number;
+}
+
+// func to print sstf order and total head movement
+void print_sstf(int blocks[], int count)
+{
+    int visited[1000];
+    int current_head = 0;
+    int total_movement = 0;
+
+    if (count <= 0)
+    {
+        return;
+    }
+
+    for (int i = 0; i < count; i++)
+    {
+        visited[i] = 0;
+    }
+
+    printf("SSTF Service Order:\n");
+
+    for (int i = 0; i < count; i++)
+    {
+        int closest_index = -1;
+        int closest_distance = -1;
+
+        for (int j = 0; j < count; j++)
+        {
+            if (visited[j] == 0)
+            {
+                int distance = absolute_value(current_head - blocks[j]);
+
+                if (closest_index == -1 || distance < closest_distance)
+                {
+                    closest_index = j;
+                    closest_distance = distance;
+                }
+            }
+        }
+
+        visited[closest_index] = 1;
+        total_movement += absolute_value(current_head - blocks[closest_index]);
+        current_head = blocks[closest_index];
+
+        printf("%d", blocks[closest_index]);
+
+        if (i < count - 1)
+        {
+            printf(" -> ");
+        }
+    }
+
+    printf("\n");
+    printf("Total Head Movement: %d\n", total_movement);
+}
+
 // bitmap helper functions
 int load_bitmap(FILE *disk_file_pointer, superblock_t *sb, char *bitmap)
 {
@@ -626,6 +698,7 @@ int write_file(FILE *disk_file_pointer, superblock_t *sb, char *filename, char *
     int data_size;
     int blocks_needed;
     int start_block;
+    int accessed_blocks[1000];
 
     inode_bytes = sb->inode_blocks * sb->block_size;
     max_inodes = inode_bytes / sizeof(inode_t);
@@ -724,6 +797,8 @@ int write_file(FILE *disk_file_pointer, superblock_t *sb, char *filename, char *
             return 0;
         }
 
+        accessed_blocks[i] = start_block + i;
+
         bitmap[start_block + i] = 1;
     }
 
@@ -751,6 +826,7 @@ int write_file(FILE *disk_file_pointer, superblock_t *sb, char *filename, char *
     printf("Wrote file: %s\n", filename);
     printf("Start block: %d\n", start_block);
     printf("Blocks used: %d\n", blocks_needed);
+    print_sstf(accessed_blocks, blocks_needed);
 
     free(inode_table);
     free(bitmap);
@@ -769,6 +845,7 @@ int read_file(FILE *disk_file_pointer, superblock_t *sb, char *filename)
     int max_inodes;
     int file_index = -1;
     int data_offset = 0;
+    int accessed_blocks[1000];
 
     inode_bytes = sb->inode_blocks * sb->block_size;
     max_inodes = inode_bytes / sizeof(inode_t);
@@ -850,6 +927,8 @@ int read_file(FILE *disk_file_pointer, superblock_t *sb, char *filename)
             return 0;
         }
 
+        accessed_blocks[i] = inode_table[file_index].start_block + i;
+
         memcpy(file_data + data_offset, block_buffer, bytes_to_copy);
         data_offset += bytes_to_copy;
     }
@@ -858,6 +937,8 @@ int read_file(FILE *disk_file_pointer, superblock_t *sb, char *filename)
 
     printf("File: %s\n", filename);
     printf("Data: %s\n", file_data);
+    print_sstf(accessed_blocks, inode_table[file_index].block_count);
+
 
     free(inode_table);
     free(block_buffer);
@@ -975,6 +1056,144 @@ int delete_file(FILE *disk_file_pointer, superblock_t *sb, char *filename)
     return 1;
 }
 
+// func to list files
+int list_files(FILE *disk_file_pointer, superblock_t *sb)
+{
+    inode_t *inode_table;
+    int inode_bytes;
+    int max_inodes;
+    int found = 0;
+
+    inode_bytes = sb->inode_blocks * sb->block_size;
+    max_inodes = inode_bytes / sizeof(inode_t);
+
+    inode_table = (inode_t *)malloc(inode_bytes);
+
+    if (inode_table == NULL)
+    {
+        fprintf(stderr, "Error allocating inode table\n");
+        return 0;
+    }
+
+    if (load_inode_table(disk_file_pointer, sb, inode_table) == 0)
+    {
+        free(inode_table);
+        return 0;
+    }
+
+    printf("Files:\n");
+
+    for (int i = 0; i < max_inodes; i++)
+    {
+        if (inode_table[i].used == 1)
+        {
+            printf("%s\n", inode_table[i].filename);
+            found = 1;
+        }
+    }
+
+    if (found == 0)
+    {
+        printf("No files found.\n");
+    }
+
+    free(inode_table);
+
+    return 1;
+}
+
+// func to show file metadata
+int stat_file(FILE *disk_file_pointer, superblock_t *sb, char *filename)
+{
+    inode_t *inode_table;
+    int inode_bytes;
+    int max_inodes;
+    int file_index = -1;
+
+    inode_bytes = sb->inode_blocks * sb->block_size;
+    max_inodes = inode_bytes / sizeof(inode_t);
+
+    inode_table = (inode_t *)malloc(inode_bytes);
+
+    if (inode_table == NULL)
+    {
+        fprintf(stderr, "Error allocating inode table\n");
+        return 0;
+    }
+
+    if (load_inode_table(disk_file_pointer, sb, inode_table) == 0)
+    {
+        free(inode_table);
+        return 0;
+    }
+
+    // find file inode
+    for (int i = 0; i < max_inodes; i++)
+    {
+        if (inode_table[i].used == 1 && strcmp(inode_table[i].filename, filename) == 0)
+        {
+            file_index = i;
+            break;
+        }
+    }
+
+    if (file_index == -1)
+    {
+        fprintf(stderr, "Error: file not found: %s\n", filename);
+        free(inode_table);
+        return 0;
+    }
+
+    printf("File metadata:\n");
+    printf("Filename: %s\n", inode_table[file_index].filename);
+    printf("Size: %d bytes\n", inode_table[file_index].size);
+    printf("Start block: %d\n", inode_table[file_index].start_block);
+    printf("Block count: %d\n", inode_table[file_index].block_count);
+    printf("Used: %d\n", inode_table[file_index].used);
+
+    free(inode_table);
+    return 1;
+}
+
+// func to display bitmap
+int show_bitmap(FILE *disk_file_pointer, superblock_t *sb)
+{
+    char *bitmap;
+    int bitmap_size;
+
+    bitmap_size = sb->bitmap_blocks * sb->block_size;
+    bitmap = (char *)malloc(bitmap_size);
+
+    if (bitmap == NULL)
+    {
+        fprintf(stderr, "Error allocating bitmap\n");
+        return 0;
+    }
+
+    if (load_bitmap(disk_file_pointer, sb, bitmap) == 0)
+    {
+        free(bitmap);
+        return 0;
+    }
+
+    printf("Bitmap:\n");
+
+    for (int i = 0; i < sb->total_blocks; i++)
+    {
+        printf("%d", bitmap[i]);
+
+        if ((i + 1) % 64 == 0)
+        {
+            printf("\n");
+        }
+    }
+
+    printf("\n");
+
+    free(bitmap);
+    return 1;
+}
+
 // functions for parsing workload file and executing commands
 int parse_workload_file(char *workload_file, FILE *disk_file_pointer, superblock_t *sb)
 {
@@ -1011,9 +1230,20 @@ int execute_command(char *command, FILE *disk_file_pointer, superblock_t *sb)
     char filename[32];
     char data[MAX_COMMAND_LENGTH];
 
+
     if (strcmp(command, "format") == 0)
     {
         return format_disk(disk_file_pointer, sb);
+    }
+
+    if (strcmp(command, "ls") == 0)
+    {
+        return list_files(disk_file_pointer, sb);
+    }
+
+    if (strcmp(command, "bitmap") == 0)
+    {
+        return show_bitmap(disk_file_pointer, sb);
     }
 
     if (sscanf(command, "%31s %31s", command_name, filename) >= 2)
@@ -1037,6 +1267,11 @@ int execute_command(char *command, FILE *disk_file_pointer, superblock_t *sb)
         if (strcmp(command_name, "read") == 0)
         {
             return read_file(disk_file_pointer, sb, filename);
+        }
+
+        if (strcmp(command_name, "stat") == 0)
+        {
+            return stat_file(disk_file_pointer, sb, filename);
         }
 
         if (strcmp(command_name, "delete") == 0)
