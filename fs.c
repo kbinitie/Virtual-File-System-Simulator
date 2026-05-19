@@ -11,7 +11,7 @@
 #define INODE_START 5
 #define INODE_BLOCKS 16
 #define DATA_START 21
-#define MAX_COMMAND_LENGTH 256
+#define MAX_COMMAND_LENGTH 4096
 
 typedef struct
 {

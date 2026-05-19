@@ -14,7 +14,7 @@ Email: binitie@chapman.edu
 ## Repository
 
 GitHub Repository:  
-https://github.com/kbinitie/Virtual-File-System-Simulator?utm_source=chatgpt.com
+https://github.com/kbinitie/Virtual-File-System-Simulator
 
 ---
 
@@ -48,8 +48,6 @@ Example:
 ```
 ./fs -f vdisk.img -d 1048576 -b 512 -t 2048 -w workload.txt
 ```
-
-Arguments:
 
 Arguments:
 
@@ -361,6 +359,8 @@ Used: 1
 ---
 
 ## Bitmap Observations
+
+Note: The bitmap examples below are shortened for readability. The actual program prints the full bitmap for all blocks.
 
 Initial bitmap after formatting:
 ```
