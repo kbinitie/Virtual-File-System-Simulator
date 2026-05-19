@@ -1,25 +1,25 @@
 format
 ls
 bitmap
-create small.txt
-create second.txt
-write small.txt hello world
-write second.txt goodbye
-read small.txt
-read second.txt
-stat small.txt
-stat second.txt
-ls
+create big.txt
+write big.txt abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghij
+read big.txt
+stat big.txt
 bitmap
-delete small.txt
+create small.txt
+write small.txt hello world
+read small.txt
+stat small.txt
 ls
+delete big.txt
 bitmap
 create reused.txt
 write reused.txt reused block
 read reused.txt
 stat reused.txt
+ls
 bitmap
-delete second.txt
+delete small.txt
 delete reused.txt
 ls
 bitmap
