@@ -58,6 +58,7 @@ int load_inode_table(FILE *disk_file_pointer, superblock_t *sb, inode_t *inode_t
 int save_inode_table(FILE *disk_file_pointer, superblock_t *sb, inode_t *inode_table);
 int create_file(FILE *disk_file_pointer, superblock_t *sb, char *filename);
 int write_file(FILE *disk_file_pointer, superblock_t *sb, char *filename, char *data);
+int read_file(FILE *disk_file_pointer, superblock_t *sb, char *filename);
 
 // functions for parsing workload file and executing commands
 int parse_workload_file(char *workload_file, FILE *disk_file_pointer, superblock_t *sb);
@@ -754,6 +755,114 @@ int write_file(FILE *disk_file_pointer, superblock_t *sb, char *filename, char *
     return 1;
 }
 
+// func to read file
+int read_file(FILE *disk_file_pointer, superblock_t *sb, char *filename)
+{
+    inode_t *inode_table;
+    char *block_buffer;
+    char *file_data;
+
+    int inode_bytes;
+    int max_inodes;
+    int file_index = -1;
+    int data_offset = 0;
+
+    inode_bytes = sb->inode_blocks * sb->block_size;
+    max_inodes = inode_bytes / sizeof(inode_t);
+
+    inode_table = (inode_t *)malloc(inode_bytes);
+    block_buffer = (char *)malloc(sb->block_size);
+
+    if (inode_table == NULL || block_buffer == NULL)
+    {
+        fprintf(stderr, "Error allocating memory for read\n");
+        free(inode_table);
+        free(block_buffer);
+        return 0;
+    }
+
+    if (load_inode_table(disk_file_pointer, sb, inode_table) == 0)
+    {
+        free(inode_table);
+        free(block_buffer);
+        return 0;
+    }
+
+    // find file inode
+    for (int i = 0; i < max_inodes; i++)
+    {
+        if (inode_table[i].used == 1 && strcmp(inode_table[i].filename, filename) == 0)
+        {
+            file_index = i;
+            break;
+        }
+    }
+
+    if (file_index == -1)
+    {
+        fprintf(stderr, "Error: file not found: %s\n", filename);
+        free(inode_table);
+        free(block_buffer);
+        return 0;
+    }
+
+    if (inode_table[file_index].block_count == 0)
+    {
+        printf("File is empty: %s\n", filename);
+        free(inode_table);
+        free(block_buffer);
+        return 1;
+    }
+
+    file_data = (char *)malloc(inode_table[file_index].size + 1);
+
+    if (file_data == NULL)
+    {
+        fprintf(stderr, "Error allocating file data\n");
+        free(inode_table);
+        free(block_buffer);
+        return 0;
+    }
+
+    // read file data from contiguous blocks
+    for (int i = 0; i < inode_table[file_index].block_count; i++)
+    {
+        int bytes_left = inode_table[file_index].size - data_offset;
+        int bytes_to_copy = sb->block_size;
+
+        if (bytes_left < sb->block_size)
+        {
+            bytes_to_copy = bytes_left;
+        }
+
+        if (disk_read_block(disk_file_pointer,
+                            inode_table[file_index].start_block + i,
+                            sb->block_size,
+                            sb->total_blocks,
+                            block_buffer) == 0)
+        {
+            free(inode_table);
+            free(block_buffer);
+            free(file_data);
+            return 0;
+        }
+
+        memcpy(file_data + data_offset, block_buffer, bytes_to_copy);
+        data_offset += bytes_to_copy;
+    }
+
+    file_data[inode_table[file_index].size] = '\0';
+
+    printf("File: %s\n", filename);
+    printf("Data: %s\n", file_data);
+
+    free(inode_table);
+    free(block_buffer);
+    free(file_data);
+
+    return 1;
+}
+
 // functions for parsing workload file and executing commands
 int parse_workload_file(char *workload_file, FILE *disk_file_pointer, superblock_t *sb)
 {
@@ -812,6 +921,12 @@ int execute_command(char *command, FILE *disk_file_pointer, superblock_t *sb)
             fprintf(stderr, "Error: write command needs filename and data\n");
             return 0;
         }
+
+        if (strcmp(command_name, "read") == 0)
+        {
+            return read_file(disk_file_pointer, sb, filename);
+        }
+    
     }
 
     printf("Executing command: %s\n", command);

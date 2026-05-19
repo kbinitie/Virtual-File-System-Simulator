@@ -1,3 +1,4 @@
 format
 create file1.txt
 write file1.txt hello world
+read file1.txt
