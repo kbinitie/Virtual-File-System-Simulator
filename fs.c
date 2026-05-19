@@ -1,3 +1,5 @@
+// Brent Matthew Ortizo and Bintie Kayode
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,6 +61,7 @@ int save_inode_table(FILE *disk_file_pointer, superblock_t *sb, inode_t *inode_t
 int create_file(FILE *disk_file_pointer, superblock_t *sb, char *filename);
 int write_file(FILE *disk_file_pointer, superblock_t *sb, char *filename, char *data);
 int read_file(FILE *disk_file_pointer, superblock_t *sb, char *filename);
+int delete_file(FILE *disk_file_pointer, superblock_t *sb, char *filename);
 
 // functions for parsing workload file and executing commands
 int parse_workload_file(char *workload_file, FILE *disk_file_pointer, superblock_t *sb);
@@ -863,6 +866,115 @@ int read_file(FILE *disk_file_pointer, superblock_t *sb, char *filename)
     return 1;
 }
 
+// func to delete file
+int delete_file(FILE *disk_file_pointer, superblock_t *sb, char *filename)
+{
+    inode_t *inode_table;
+    char *bitmap;
+    char *block_buffer;
+
+    int inode_bytes;
+    int max_inodes;
+    int bitmap_size;
+    int file_index = -1;
+
+    inode_bytes = sb->inode_blocks * sb->block_size;
+    max_inodes = inode_bytes / sizeof(inode_t);
+    bitmap_size = sb->bitmap_blocks * sb->block_size;
+
+    inode_table = (inode_t *)malloc(inode_bytes);
+    bitmap = (char *)malloc(bitmap_size);
+    block_buffer = (char *)malloc(sb->block_size);
+
+    if (inode_table == NULL || bitmap == NULL || block_buffer == NULL)
+    {
+        fprintf(stderr, "Error allocating memory for delete\n");
+        free(inode_table);
+        free(bitmap);
+        free(block_buffer);
+        return 0;
+    }
+
+    if (load_inode_table(disk_file_pointer, sb, inode_table) == 0)
+    {
+        free(inode_table);
+        free(bitmap);
+        free(block_buffer);
+        return 0;
+    }
+
+    if (load_bitmap(disk_file_pointer, sb, bitmap) == 0)
+    {
+        free(inode_table);
+        free(bitmap);
+        free(block_buffer);
+        return 0;
+    }
+
+    // find file inode
+    for (int i = 0; i < max_inodes; i++)
+    {
+        if (inode_table[i].used == 1 && strcmp(inode_table[i].filename, filename) == 0)
+        {
+            file_index = i;
+            break;
+        }
+    }
+
+    if (file_index == -1)
+    {
+        fprintf(stderr, "Error: file not found: %s\n", filename);
+        free(inode_table);
+        free(bitmap);
+        free(block_buffer);
+        return 0;
+    }
+
+    // free data blocks in bitmap and clear data blocks
+    for (int i = 0; i < inode_table[file_index].block_count; i++)
+    {
+        int block_number = inode_table[file_index].start_block + i;
+
+        bitmap[block_number] = 0;
+
+        memset(block_buffer, 0, sb->block_size);
+        if (disk_write_block(disk_file_pointer, block_number, sb->block_size, sb->total_blocks, block_buffer) == 0)
+        {
+            free(inode_table);
+            free(bitmap);
+            free(block_buffer);
+            return 0;
+        }
+    }
+
+    // clear inode metadata
+    memset(&inode_table[file_index], 0, sizeof(inode_t));
+
+    if (save_inode_table(disk_file_pointer, sb, inode_table) == 0)
+    {
+        free(inode_table);
+        free(bitmap);
+        free(block_buffer);
+        return 0;
+    }
+
+    if (save_bitmap(disk_file_pointer, sb, bitmap) == 0)
+    {
+        free(inode_table);
+        free(bitmap);
+        free(block_buffer);
+        return 0;
+    }
+
+    printf("File deleted: %s\n", filename);
+
+    free(inode_table);
+    free(bitmap);
+    free(block_buffer);
+
+    return 1;
+}
+
 // functions for parsing workload file and executing commands
 int parse_workload_file(char *workload_file, FILE *disk_file_pointer, superblock_t *sb)
 {
@@ -925,6 +1037,11 @@ int execute_command(char *command, FILE *disk_file_pointer, superblock_t *sb)
         if (strcmp(command_name, "read") == 0)
         {
             return read_file(disk_file_pointer, sb, filename);
+        }
+
+        if (strcmp(command_name, "delete") == 0)
+        {
+            return delete_file(disk_file_pointer, sb, filename);
         }
     
     }

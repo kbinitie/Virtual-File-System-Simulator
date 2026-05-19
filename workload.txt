@@ -1,4 +1,7 @@
 format
 create file1.txt
 write file1.txt hello world
-read file1.txt
+delete file1.txt
+create file2.txt
+write file2.txt goodbye
+read file2.txt
