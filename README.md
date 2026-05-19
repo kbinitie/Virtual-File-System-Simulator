@@ -461,4 +461,3 @@ The simulator handles:
 This project demonstrates how operating systems manage secondary storage using block-based file systems. By implementing a virtual disk, bitmap allocation, inode metadata management, contiguous allocation, and SSTF scheduling, we were able to simulate many of the core concepts behind real-world file systems.
 
 The project provided hands-on experience with low-level storage management, file-system organization, metadata handling, and disk scheduling algorithms.
-````
